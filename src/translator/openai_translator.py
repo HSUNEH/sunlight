@@ -138,11 +138,17 @@ class PaperTranslator:
             translated = [t.strip() for t in result.split("---PARAGRAPH_SEPARATOR---")]
 
             if len(translated) != len(texts):
-                return [t for t in texts]
+                print(
+                    f"Batch count mismatch: {len(translated)} vs {len(texts)}, "
+                    "falling back to individual"
+                )
+                tasks = [self._translate_text_async(t, target_lang) for t in texts]
+                return await asyncio.gather(*tasks)
             return translated
         except Exception as exc:
-            print(f"Async batch error: {exc}")
-            return [t for t in texts]
+            print(f"Async batch error: {exc}, falling back to individual")
+            tasks = [self._translate_text_async(t, target_lang) for t in texts]
+            return await asyncio.gather(*tasks)
 
     def _translate_text(self, text: str, target_lang: str) -> str:
         """Translate a single text string."""
@@ -150,6 +156,27 @@ class PaperTranslator:
             return text
 
         response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Translate the following academic text to "
+                        f"{target_lang}. Preserve LaTeX equations as-is. "
+                        "Keep technical terms accurate."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+        )
+        return response.choices[0].message.content
+
+    async def _translate_text_async(self, text: str, target_lang: str) -> str:
+        """Translate a single text string asynchronously."""
+        if not text.strip():
+            return text
+
+        response = await self.async_client.chat.completions.create(
             model=self.model,
             messages=[
                 {

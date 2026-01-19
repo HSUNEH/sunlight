@@ -75,7 +75,9 @@ def generate_html(pairs, pdf_images):
         bbox_json = json.dumps(p["bbox"])
         translated_html += (
             f'<div class="para" data-id="{p["id"]}" '
-            f'data-bbox=\'{bbox_json}\' data-page="{p["page"]}">'
+            f'data-bbox=\'{bbox_json}\' data-page="{p["page"]}" '
+            f'onmouseenter="highlightBbox({bbox_json}, {p["page"]})" '
+            f'onmouseleave="clearHighlight()">'
             f'{p["translated"]}</div>'
         )
 
@@ -85,12 +87,33 @@ def generate_html(pairs, pdf_images):
     # 페이지별 이미지 HTML 생성
     pdf_pages_html = ""
     for i, img in enumerate(pdf_images):
+        bbox_rects = ""
+        for p in pairs:
+            if p["page"] != i:
+                continue
+            bbox = p["bbox"]
+            x = (bbox[0] / 1000) * img["width"]
+            y = (bbox[1] / 1000) * img["height"]
+            width = ((bbox[2] - bbox[0]) / 1000) * img["width"]
+            height = ((bbox[3] - bbox[1]) / 1000) * img["height"]
+            bbox_rects += f'''
+            <rect class="bbox-area" data-id="{p["id"]}"
+                  x="{x}" y="{y}" width="{width}" height="{height}"
+                  onmouseenter="highlightTranslation({p["id"]})"
+                  onmouseleave="clearTranslationHighlight()"
+                  style="fill: transparent; cursor: pointer; pointer-events: all;" />
+            '''
         pdf_pages_html += f'''
-        <div class="pdf-page" data-page="{i}" style="position: relative; margin-bottom: 10px;">
-            <img src="data:image/png;base64,{img["base64"]}"
-                 style="display: block; width: {img["width"]}px; max-width: 100%;" />
+        <div class="pdf-page" data-page="{i}">
+            <img src="data:image/png;base64,{img["base64"]}" />
             <svg class="pdf-overlay" data-page="{i}"
-                 style="position: absolute; top: 0; left: 0; width: {img["width"]}px; height: {img["height"]}px; pointer-events: none;">
+                 viewBox="0 0 {img["width"]} {img["height"]}"
+                 preserveAspectRatio="none">
+            </svg>
+            <svg class="pdf-clickable" data-page="{i}"
+                 viewBox="0 0 {img["width"]} {img["height"]}"
+                 preserveAspectRatio="none">
+                {bbox_rects}
             </svg>
         </div>
         '''
@@ -103,14 +126,17 @@ def generate_html(pairs, pdf_images):
 
         /* PDF 뷰어 */
         .pdf-wrapper {{ flex: 1; overflow-y: auto; overflow-x: auto; border: 1px solid #ddd; border-top: none; background: #525659; padding: 10px; }}
-        .pdf-page {{ margin: 0 auto; background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }}
-        .pdf-page img {{ max-width: 100%; height: auto; }}
+        .pdf-page {{ position: relative; display: inline-block; margin: 0 auto; background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }}
+        .pdf-page img {{ display: block; width: 100%; height: auto; }}
+        .pdf-overlay {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }}
+        .pdf-clickable {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; }}
         .highlight-rect {{ fill: rgba(255, 243, 0, 0.4); stroke: #ff9800; stroke-width: 2; }}
 
         /* 번역본 */
         .translation-wrapper {{ flex: 1; overflow-y: auto; padding: 10px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 4px 4px; }}
         .para {{ padding: 10px; margin: 5px 0; border-radius: 4px; cursor: pointer; transition: background 0.2s; line-height: 1.6; }}
         .para:hover {{ background: #fff3cd; }}
+        .para.highlight {{ background: #fff3cd; }}
     </style>
 
     <div class="container">
@@ -127,70 +153,68 @@ def generate_html(pairs, pdf_images):
             </div>
         </div>
     </div>
-
-    <script>
-    (function() {{
-        const pdfImages = {pdf_images_json};
-        let currentHighlight = null;
-
-        function highlightBbox(bbox, pageIdx) {{
-            clearHighlight();
-
-            const svg = document.querySelector('.pdf-overlay[data-page="' + pageIdx + '"]');
-            if (!svg) return;
-
-            const scale = pdfImages[pageIdx]?.scale || 1.5;
-
-            // bbox: [x_min, y_min, x_max, y_max] (PDF 좌표)
-            const x = bbox[0] * scale;
-            const y = bbox[1] * scale;
-            const width = (bbox[2] - bbox[0]) * scale;
-            const height = (bbox[3] - bbox[1]) * scale;
-
-            // SVG rect 생성
-            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-            rect.setAttribute('x', x);
-            rect.setAttribute('y', y);
-            rect.setAttribute('width', width);
-            rect.setAttribute('height', height);
-            rect.setAttribute('class', 'highlight-rect');
-            svg.appendChild(rect);
-
-            currentHighlight = {{ svg, rect }};
-
-            // 해당 페이지로 스크롤
-            const pageEl = document.querySelector('.pdf-page[data-page="' + pageIdx + '"]');
-            if (pageEl) {{
-                pageEl.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-            }}
-        }}
-
-        function clearHighlight() {{
-            if (currentHighlight) {{
-                currentHighlight.svg.removeChild(currentHighlight.rect);
-                currentHighlight = null;
-            }}
-        }}
-
-        // 번역본 hover 이벤트
-        document.querySelectorAll('.para').forEach(el => {{
-            el.addEventListener('mouseenter', () => {{
-                const bbox = JSON.parse(el.dataset.bbox);
-                const page = parseInt(el.dataset.page);
-                highlightBbox(bbox, page);
-            }});
-            el.addEventListener('mouseleave', () => {{
-                clearHighlight();
-            }});
-        }});
-    }})();
-    </script>
     """
     return html
 
 
+HIGHLIGHT_JS = """
+() => {
+    window.highlightBbox = function(bbox, pageIdx) {
+        window.clearHighlight();
+
+        var svg = document.querySelector('.pdf-overlay[data-page="' + pageIdx + '"]');
+        if (!svg) { console.log('SVG not found for page', pageIdx); return; }
+
+        var x = (bbox[0] / 1000) * 918;
+        var y = (bbox[1] / 1000) * 1188;
+        var width = ((bbox[2] - bbox[0]) / 1000) * 918;
+        var height = ((bbox[3] - bbox[1]) / 1000) * 1188;
+
+        console.log('highlight:', pageIdx, bbox, x, y, width, height);
+
+        var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('x', x);
+        rect.setAttribute('y', y);
+        rect.setAttribute('width', width);
+        rect.setAttribute('height', height);
+        rect.setAttribute('class', 'highlight-rect');
+        svg.appendChild(rect);
+
+        window.currentHighlight = { svg: svg, rect: rect };
+
+        var pageEl = document.querySelector('.pdf-page[data-page="' + pageIdx + '"]');
+        if (pageEl) {
+            pageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    };
+
+    window.clearHighlight = function() {
+        if (window.currentHighlight) {
+            window.currentHighlight.svg.removeChild(window.currentHighlight.rect);
+            window.currentHighlight = null;
+        }
+    };
+
+    window.highlightTranslation = function(id) {
+        window.clearTranslationHighlight();
+        var para = document.querySelector('.para[data-id="' + id + '"]');
+        if (para) {
+            para.classList.add('highlight');
+            para.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    };
+
+    window.clearTranslationHighlight = function() {
+        document.querySelectorAll('.para.highlight').forEach(el => el.classList.remove('highlight'));
+    };
+
+    console.log('Highlight functions loaded');
+}
+"""
+
+
 def create_app():
-    with gr.Blocks(title="논문 번역기") as app:
+    with gr.Blocks(title="논문 번역기", js=HIGHLIGHT_JS) as app:
         gr.Markdown("# 논문 PDF 번역기")
         gr.Markdown(
             "PDF를 업로드하면 파싱 후 번역합니다. "
