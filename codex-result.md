@@ -1,3 +1,3 @@
-`git status --short` shows many unrelated/untracked changes (e.g., deletion of `Agent.md`, untracked `.claude/`, `test_output.md`, `test_translated.md`, etc.).
+README.md를 한국어로 간단하게 추가했습니다.
 
-Per instructions, I need to confirm which files to include in the commit and push.
+- 파일: `README.md`
