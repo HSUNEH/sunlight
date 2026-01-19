@@ -3,22 +3,29 @@ from __future__ import annotations
 
 class ContentClassifier:
     def is_body_text(self, block: dict) -> bool:
-        return block.get("type") == "paragraph"
+        return block.get("type") in {"text", "title", "list"}
 
     def is_table(self, block: dict) -> bool:
         return block.get("type") == "table"
 
     def is_figure(self, block: dict) -> bool:
-        return block.get("type") == "figure"
+        return block.get("type") == "image"
 
     def is_equation(self, block: dict) -> bool:
         return block.get("type") == "equation"
 
     def is_metadata(self, block: dict) -> bool:
-        return block.get("type") == "metadata"
+        return block.get("type") in {
+            "header",
+            "footer",
+            "page_number",
+            "aside_text",
+            "page_footnote",
+            "code",
+        }
 
     def is_footnote(self, block: dict) -> bool:
-        return block.get("type") == "footnote"
+        return block.get("type") == "page_footnote"
 
     def is_header_footer(self, block: dict) -> bool:
         return block.get("type") in {"header", "footer"}

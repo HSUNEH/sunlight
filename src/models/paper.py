@@ -9,6 +9,7 @@ class Paragraph:
     text: str
     page: Optional[int] = None
     block_id: Optional[str] = None
+    bbox: Optional[List[float]] = None
 
 
 @dataclass

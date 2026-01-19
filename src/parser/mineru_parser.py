@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 from typing import Iterable
 
@@ -18,13 +20,13 @@ class PaperParser:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-        blocks = self._run_mineru(pdf_path)
+        blocks = list(self._run_mineru(pdf_path))
         body_blocks = [b for b in blocks if self.classifier.is_body_text(b)]
-        paragraphs = self.paragraph_builder.merge_broken_paragraphs(body_blocks)
+        paragraphs = self.paragraph_builder.build(body_blocks)
 
         tables = [self._to_table(b) for b in blocks if self.classifier.is_table(b)]
         figures = [self._to_figure(b) for b in blocks if self.classifier.is_figure(b)]
-        equations = [b["latex"] for b in blocks if self.classifier.is_equation(b)]
+        equations = [b.get("latex", "") for b in blocks if self.classifier.is_equation(b)]
         metadata = self._extract_metadata(blocks)
 
         return ParsedPaper(
@@ -36,26 +38,65 @@ class PaperParser:
         )
 
     def _run_mineru(self, pdf_path: Path) -> Iterable[dict]:
-        """Placeholder for MinerU integration.
+        """Run MinerU CLI and yield content list blocks."""
+        output_root = Path("output")
+        content_list_path = (
+            output_root
+            / pdf_path.stem
+            / "hybrid_auto"
+            / f"{pdf_path.stem}_content_list.json"
+        )
+        if not content_list_path.exists():
+            output_root.mkdir(parents=True, exist_ok=True)
 
-        Expected output is a list of dict blocks containing fields like:
-        {"type": "paragraph"|"table"|"figure"|"equation"|"metadata", ...}
-        """
-        raise NotImplementedError("MinerU integration not implemented yet")
+            devices = ["mps", "cpu"]
+            last_error: subprocess.CalledProcessError | None = None
+            for device in devices:
+                cmd = [
+                    "mineru",
+                    "-p",
+                    str(pdf_path),
+                    "-o",
+                    str(output_root),
+                    "-d",
+                    device,
+                ]
+                try:
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    last_error = None
+                    break
+                except subprocess.CalledProcessError as exc:
+                    last_error = exc
+
+            if last_error is not None:
+                raise RuntimeError(
+                    f"MinerU failed with exit code {last_error.returncode}: "
+                    f"{last_error.stderr.strip()}"
+                ) from last_error
+
+        if not content_list_path.exists():
+            raise FileNotFoundError(f"MinerU output not found: {content_list_path}")
+
+        with content_list_path.open("r", encoding="utf-8") as handle:
+            blocks = json.load(handle)
+
+        for block in blocks:
+            if isinstance(block, dict):
+                yield block
 
     def _to_table(self, block: dict) -> Table:
         return Table(
             html=block.get("html", ""),
             caption=block.get("caption"),
-            page=block.get("page"),
+            page=block.get("page_idx"),
             table_id=block.get("id"),
         )
 
     def _to_figure(self, block: dict) -> Figure:
         return Figure(
-            path=block.get("path", ""),
+            path=block.get("img_path", ""),
             caption=block.get("caption"),
-            page=block.get("page"),
+            page=block.get("page_idx"),
             figure_id=block.get("id"),
         )
 

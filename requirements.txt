@@ -1,2 +1,5 @@
 mineru
 pytest
+openai
+python-dotenv
+pymupdf

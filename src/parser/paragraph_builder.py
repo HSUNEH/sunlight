@@ -6,29 +6,24 @@ from src.models import Paragraph
 
 
 class ParagraphBuilder:
-    def merge_broken_paragraphs(self, blocks: Iterable[dict]) -> List[Paragraph]:
+    def build(self, blocks: Iterable[dict]) -> List[Paragraph]:
+        """각 블록을 개별 Paragraph로 유지."""
         paragraphs: List[Paragraph] = []
-        buffer: list[str] = []
-        page: int | None = None
-
         for block in blocks:
-            text = block.get("text", "").strip()
-            if not text:
+            text = block.get("text") or block.get("content", "")
+            if not text or not text.strip():
                 continue
-
-            if page is None:
-                page = block.get("page")
-
-            buffer.append(text)
-            if text.endswith(".") or text.endswith("?") or text.endswith("!"):
-                paragraphs.append(Paragraph(text=" ".join(buffer), page=page))
-                buffer = []
-                page = None
-
-        if buffer:
-            paragraphs.append(Paragraph(text=" ".join(buffer), page=page))
-
+            paragraphs.append(
+                Paragraph(
+                    text=text.strip(),
+                    page=block.get("page_idx", 0),
+                    bbox=block.get("bbox", [0, 0, 0, 0]),
+                )
+            )
         return paragraphs
+
+    def merge_broken_paragraphs(self, blocks: Iterable[dict]) -> List[Paragraph]:
+        return self.build(blocks)
 
     def detect_paragraph_boundaries(self, lines: Iterable[str]) -> List[int]:
         boundaries: List[int] = []
