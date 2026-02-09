@@ -22,6 +22,17 @@ class PaperParser:
 
         blocks = list(self._run_mineru(pdf_path))
         body_blocks = [b for b in blocks if self.classifier.is_body_text(b)]
+
+        # References 이후 블록 제거
+        ref_idx = None
+        for i, b in enumerate(body_blocks):
+            text = (b.get("text") or "").strip().upper()
+            if b.get("text_level") == 1 and text in ("REFERENCES", "BIBLIOGRAPHY"):
+                ref_idx = i
+                break
+        if ref_idx is not None:
+            body_blocks = body_blocks[:ref_idx]
+
         paragraphs = self.paragraph_builder.build(body_blocks)
 
         tables = [self._to_table(b) for b in blocks if self.classifier.is_table(b)]

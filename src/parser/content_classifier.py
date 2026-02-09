@@ -3,7 +3,11 @@ from __future__ import annotations
 
 class ContentClassifier:
     def is_body_text(self, block: dict) -> bool:
-        return block.get("type") in {"text", "title", "list"}
+        if block.get("type") not in {"text", "title", "list"}:
+            return False
+        if block.get("sub_type") == "ref_text":
+            return False
+        return True
 
     def is_table(self, block: dict) -> bool:
         return block.get("type") == "table"

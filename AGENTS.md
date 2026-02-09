@@ -1,37 +1,16 @@
 # Repository Guidelines
 
-## AI Agent Roles
-
-이 프로젝트는 두 개의 AI 에이전트를 사용합니다:
+## AI Agent
 
 ### Claude Code (Anthropic)
-**역할: 계획 및 프롬프팅 전용**
+**역할: 모든 개발 작업 수행**
 
-⚠️ **절대 금지 사항**
-- `src/` 폴더 내 코드 파일 직접 수정 금지
-- 코드 작성/수정은 무조건 Codex에게 위임
-- Edit, Write 도구로 `.py` 파일 건드리지 않기
-
-✅ **허용 사항**
-- `CODEX_PROMPT.md` 작성 (Codex 지시서)
-- `AGENTS.md`, `개발일지.md` 등 문서 파일 수정
 - 아키텍처 설계 및 구현 계획 수립
-- 코드 리뷰 및 피드백 (읽기만)
-- 문제 해결 방향 제시
-
-### Codex (OpenAI)
-**역할: 코드 구현 및 실행**
-- 실제 코드 작성 및 수정
+- 코드 작성 및 수정 (`src/` 포함)
 - 테스트 실행 (`pytest`)
-- MinerU 파싱 실행
 - 디버깅 및 오류 수정
-
-### 워크플로우
-1. **Claude Code**가 작업 지시를 `CODEX_PROMPT.md`에 작성
-2. **Codex**에서 `@CODEX_PROMPT.md` 실행
-3. 실행 결과를 `codex-result.md`에 저장
-4. 결과를 **Claude Code**에 공유하여 리뷰 (`@codex-result.md` 확인)
-5. Codex의 모든 응답 내용은 반드시 `codex-result.md`에만 기록하고, 채팅 응답은 최소화
+- 코드 리뷰 및 문서 작성
+- Git 커밋 및 푸시
 
 ### 실행 전 필수 설정
 ```bash

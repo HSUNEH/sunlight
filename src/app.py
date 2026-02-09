@@ -73,11 +73,13 @@ def generate_html(pairs, pdf_images):
     translated_html = ""
     for p in pairs:
         bbox_json = json.dumps(p["bbox"])
+        page_num = p["page"] + 1  # 1-based display
         translated_html += (
             f'<div class="para" data-id="{p["id"]}" '
             f'data-bbox=\'{bbox_json}\' data-page="{p["page"]}" '
             f'onmouseenter="highlightBbox({bbox_json}, {p["page"]})" '
             f'onmouseleave="clearHighlight()">'
+            f'<span class="para-page-badge">p.{page_num}</span>'
             f'{p["translated"]}</div>'
         )
 
@@ -103,22 +105,40 @@ def generate_html(pairs, pdf_images):
                   onmouseleave="clearTranslationHighlight()"
                   style="fill: transparent; cursor: pointer; pointer-events: all;" />
             '''
+        page_label = i + 1  # 1-based display
         pdf_pages_html += f'''
         <div class="pdf-page" data-page="{i}">
-            <img src="data:image/png;base64,{img["base64"]}" />
-            <svg class="pdf-overlay" data-page="{i}"
-                 viewBox="0 0 {img["width"]} {img["height"]}"
-                 preserveAspectRatio="none">
-            </svg>
-            <svg class="pdf-clickable" data-page="{i}"
-                 viewBox="0 0 {img["width"]} {img["height"]}"
-                 preserveAspectRatio="none">
-                {bbox_rects}
-            </svg>
+            <div class="page-number-label">Page {page_label}</div>
+            <div class="pdf-image-container" style="position: relative;">
+                <img src="data:image/png;base64,{img["base64"]}" />
+                <svg class="pdf-overlay" data-page="{i}"
+                     viewBox="0 0 {img["width"]} {img["height"]}"
+                     preserveAspectRatio="none">
+                </svg>
+                <svg class="pdf-clickable" data-page="{i}"
+                     viewBox="0 0 {img["width"]} {img["height"]}"
+                     preserveAspectRatio="none">
+                    {bbox_rects}
+                </svg>
+            </div>
         </div>
         '''
 
-    html = f"""
+    # KaTeX CDN for LaTeX rendering
+    katex_cdn = """
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+            onload="renderMathInElement(document.body, {
+                delimiters: [
+                    {left: '$$', right: '$$', display: true},
+                    {left: '$', right: '$', display: false}
+                ],
+                throwOnError: false
+            });"></script>
+    """
+
+    html = katex_cdn + f"""
     <style>
         .container {{ display: flex; gap: 20px; height: 80vh; }}
         .column {{ flex: 1; display: flex; flex-direction: column; min-width: 0; }}
@@ -127,6 +147,7 @@ def generate_html(pairs, pdf_images):
         /* PDF 뷰어 */
         .pdf-wrapper {{ flex: 1; overflow-y: auto; overflow-x: auto; border: 1px solid #ddd; border-top: none; background: #525659; padding: 10px; }}
         .pdf-page {{ position: relative; display: inline-block; margin: 0 auto; background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }}
+        .pdf-image-container {{ position: relative; }}
         .pdf-page img {{ display: block; width: 100%; height: auto; }}
         .pdf-overlay {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }}
         .pdf-clickable {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; }}
@@ -137,6 +158,15 @@ def generate_html(pairs, pdf_images):
         .para {{ padding: 10px; margin: 5px 0; border-radius: 4px; cursor: pointer; transition: background 0.2s; line-height: 1.6; }}
         .para:hover {{ background: #fff3cd; }}
         .para.highlight {{ background: #fff3cd; }}
+
+        /* 페이지 번호 라벨 (PDF 뷰어) */
+        .page-number-label {{ background: rgba(0,0,0,0.6); color: #fff; font-size: 12px; font-weight: 600; padding: 3px 10px; text-align: center; letter-spacing: 0.5px; }}
+
+        /* 번역본 페이지 배지 */
+        .para-page-badge {{ display: inline-block; font-size: 10px; color: #888; background: #f0f0f0; border-radius: 3px; padding: 1px 5px; margin-right: 6px; vertical-align: middle; font-weight: 600; line-height: 1.4; }}
+
+        /* 번역본 현재 페이지 표시 */
+        .translation-page-indicator {{ position: sticky; top: 0; z-index: 10; background: #e8f4fd; color: #1a73e8; font-size: 12px; font-weight: 600; padding: 4px 10px; border-bottom: 1px solid #c2dff5; text-align: center; }}
     </style>
 
     <div class="container">
@@ -148,7 +178,8 @@ def generate_html(pairs, pdf_images):
         </div>
         <div class="column">
             <div class="column-header">Translated (KO)</div>
-            <div class="translation-wrapper">
+            <div class="translation-wrapper" id="translationWrapper">
+                <div class="translation-page-indicator" id="translationPageIndicator">Page 1</div>
                 {translated_html}
             </div>
         </div>
@@ -165,12 +196,17 @@ HIGHLIGHT_JS = """
         var svg = document.querySelector('.pdf-overlay[data-page="' + pageIdx + '"]');
         if (!svg) { console.log('SVG not found for page', pageIdx); return; }
 
-        var x = (bbox[0] / 1000) * 918;
-        var y = (bbox[1] / 1000) * 1188;
-        var width = ((bbox[2] - bbox[0]) / 1000) * 918;
-        var height = ((bbox[3] - bbox[1]) / 1000) * 1188;
+        // viewBox에서 실제 크기를 동적으로 읽어옴 (하드코딩 제거)
+        var viewBox = svg.viewBox.baseVal;
+        var svgW = viewBox.width;
+        var svgH = viewBox.height;
 
-        console.log('highlight:', pageIdx, bbox, x, y, width, height);
+        var x = (bbox[0] / 1000) * svgW;
+        var y = (bbox[1] / 1000) * svgH;
+        var width = ((bbox[2] - bbox[0]) / 1000) * svgW;
+        var height = ((bbox[3] - bbox[1]) / 1000) * svgH;
+
+        console.log('highlight:', pageIdx, bbox, 'viewBox:', svgW, svgH, '->', x, y, width, height);
 
         var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
         rect.setAttribute('x', x);
@@ -208,7 +244,62 @@ HIGHLIGHT_JS = """
         document.querySelectorAll('.para.highlight').forEach(el => el.classList.remove('highlight'));
     };
 
-    console.log('Highlight functions loaded');
+    // 번역본 스크롤 시 현재 페이지 번호 표시 업데이트
+    window.updateTranslationPageIndicator = function() {
+        var wrapper = document.getElementById('translationWrapper');
+        var indicator = document.getElementById('translationPageIndicator');
+        if (!wrapper || !indicator) return;
+
+        var paras = wrapper.querySelectorAll('.para[data-page]');
+        var currentPage = 0;
+        var wrapperTop = wrapper.scrollTop + wrapper.offsetTop;
+
+        paras.forEach(function(para) {
+            if (para.offsetTop <= wrapperTop + 60) {
+                currentPage = parseInt(para.getAttribute('data-page')) || 0;
+            }
+        });
+
+        indicator.textContent = 'Page ' + (currentPage + 1);
+    };
+
+    // 번역본 영역 스크롤 이벤트 감지
+    var setupScrollObserver = function() {
+        var wrapper = document.getElementById('translationWrapper');
+        if (wrapper) {
+            wrapper.addEventListener('scroll', window.updateTranslationPageIndicator);
+        }
+    };
+
+    // DOM 변경 감지하여 번역 결과가 로드되면 스크롤 옵저버 설정
+    var domObserver = new MutationObserver(function() {
+        var wrapper = document.getElementById('translationWrapper');
+        if (wrapper) {
+            setupScrollObserver();
+        }
+    });
+    domObserver.observe(document.body, {childList: true, subtree: true});
+
+    // KaTeX 동적 렌더링 함수
+    window.renderMathContent = function() {
+        if (typeof renderMathInElement !== 'undefined') {
+            renderMathInElement(document.body, {
+                delimiters: [
+                    {left: '$$', right: '$$', display: true},
+                    {left: '$', right: '$', display: false}
+                ],
+                throwOnError: false
+            });
+        }
+    };
+
+    // 콘텐츠 업데이트 감지 및 수식 렌더링
+    var mathObserver = new MutationObserver(function(mutations) {
+        setTimeout(window.renderMathContent, 100);
+    });
+    mathObserver.observe(document.body, {childList: true, subtree: true});
+
+    console.log('Highlight and Math functions loaded');
 }
 """
 
