@@ -1,4 +1,4 @@
-# Handoff Document (2026-01-19)
+# Handoff Document (2026-02-09)
 
 ## 프로젝트 개요
 **sunlight** - 논문 PDF 번역기 + 원본-번역 하이라이트 동기화
@@ -49,6 +49,27 @@ sunlight/
   - PDF hover → 번역본 하이라이트
 - JavaScript: `gr.Blocks(js=...)` 파라미터 사용 (gr.HTML 내 script 태그 안 됨)
 
+### 4. 끊어진 문단 병합 (Cross-Column / Cross-Page Merging)
+MinerU가 2칼럼 레이아웃이나 페이지 넘김에서 하나의 문장을 별도 블록으로 분리하는 문제 해결.
+
+**병합 판단 로직:**
+- 현재 블록 텍스트가 `.!?:;`로 끝나지 않으면 → 다음 블록과 병합
+- `text_level == 1` (title) 블록은 병합 제외
+- `type == "list"` 블록은 병합 제외
+
+**변경 파일:**
+
+| 파일 | 변경 내용 |
+|------|-----------|
+| `src/models/paper.py` | `Paragraph`에 `bboxes: Optional[List[dict]]` 필드 추가 |
+| `src/parser/paragraph_builder.py` | `_should_merge()` + `merge_broken_paragraphs()` 구현 |
+| `src/parser/mineru_parser.py` | `build()` → `merge_broken_paragraphs()` 호출로 변경 |
+| `src/app.py` | 멀티 bbox 하이라이트: `highlightMultiBbox(bboxes)` JS, 다중 영역 rect 생성 |
+
+**데이터 구조:**
+- 병합된 문단: `bboxes = [{"bbox": [...], "page": int}, ...]`
+- `page`, `bbox`는 첫 번째 블록 기준 (하위 호환)
+
 ## 핵심 기술 포인트
 
 ### bbox 좌표 계산
@@ -61,14 +82,13 @@ const y = (bbox[1] / 1000) * imgHeight;
 
 ### Gradio JavaScript 실행
 ```python
-HIGHLIGHT_JS = """
-() => {
-    window.highlightBbox = function(bbox, pageIdx) { ... };
-    window.clearHighlight = function() { ... };
-}
-"""
+# gr.Blocks(head=...) 로 <script> 주입 (Gradio sanitization 우회)
+HIGHLIGHT_HEAD = """<script>
+window.highlightMultiBbox = function(bboxes) { ... };
+window.clearHighlight = function() { ... };
+</script>"""
 
-gr.Blocks(js=HIGHLIGHT_JS)  # gr.HTML 내 <script>는 실행 안 됨
+gr.Blocks(head=HIGHLIGHT_HEAD)
 ```
 
 ### SVG 오버레이
@@ -92,11 +112,10 @@ gr.Blocks(js=HIGHLIGHT_JS)  # gr.HTML 내 <script>는 실행 안 됨
 - 개발일지에 "빠진 paragraph 해결" 작업 남아있음
 - 배치 번역 결과 개수 불일치 시 확인 필요
 
-## 다음 작업 (개발일지 기준)
-- [ ] 빠진 paragraph 해결
-- [ ] 하이라이트 반대로 (pdf -> 번역) - 구현됨, 테스트 필요
+## 다음 작업
 - [ ] UI/UX 개선
 - [ ] 문장 단위 하이라이트 (OCR 기반 솔루션 검토)
+- [ ] 크로스 페이지 병합 엣지케이스 테스트
 
 ## AI Agent 워크플로우
 - **Claude Code**: 계획/프롬프팅 전용 (코드 수정 금지!)

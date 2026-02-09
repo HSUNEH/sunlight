@@ -10,6 +10,7 @@ class Paragraph:
     page: Optional[int] = None
     block_id: Optional[str] = None
     bbox: Optional[List[float]] = None
+    bboxes: Optional[List[dict]] = None  # [{"bbox": [...], "page": int}, ...]
 
 
 @dataclass

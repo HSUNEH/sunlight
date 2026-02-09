@@ -38,13 +38,23 @@ def process_pdf(pdf_file, target_lang, progress=gr.Progress()):
     if pdf_file is None:
         return "<p>PDF 파일을 업로드하세요.</p>"
 
-    progress(0.1, desc="파싱 중...")
+    progress(0.05, desc="파싱 중...")
     parser = PaperParser()
     parsed = parser.parse(pdf_file.name)
 
-    progress(0.2, desc="번역 중...")
+    progress(0.1, desc="번역 준비 중...")
     translator = PaperTranslator()
-    translated = asyncio.run(translator.translate_async(parsed, target_lang, batch_size=25))
+
+    def on_batch_done(completed, total):
+        # 번역 구간: 0.1 ~ 0.85
+        frac = 0.1 + 0.75 * (completed / total)
+        progress(frac, desc=f"번역 중... ({completed}/{total} 배치)")
+
+    translated = asyncio.run(
+        translator.translate_async(
+            parsed, target_lang, batch_size=25, on_batch_done=on_batch_done
+        )
+    )
 
     progress(0.9, desc="PDF 이미지 변환 중...")
     # PDF를 이미지로 변환
@@ -54,12 +64,14 @@ def process_pdf(pdf_file, target_lang, progress=gr.Progress()):
     # 번역 결과에 bbox, page 정보 포함
     pairs = []
     for i, (orig, trans) in enumerate(zip(parsed.body, translated.body)):
+        bboxes = orig.bboxes or [{"bbox": orig.bbox or [0, 0, 0, 0], "page": orig.page or 0}]
         pairs.append({
             "id": i,
             "original": orig.text,
             "translated": trans.text,
             "bbox": orig.bbox or [0, 0, 0, 0],
             "page": orig.page or 0,
+            "bboxes": bboxes,
         })
 
     progress(1.0, desc="완료!")
@@ -67,38 +79,36 @@ def process_pdf(pdf_file, target_lang, progress=gr.Progress()):
 
 
 def generate_html(pairs, pdf_images):
-    """PDF 이미지 뷰어 + 번역본 HTML 생성 + 하이라이트 동기화 JS."""
+    """PDF 이미지 뷰어 + 번역본 HTML 생성."""
 
     # 번역본 HTML (bbox, page 데이터 포함)
     translated_html = ""
     for p in pairs:
-        bbox_json = json.dumps(p["bbox"])
+        bboxes_json = json.dumps(p["bboxes"])
         page_num = p["page"] + 1  # 1-based display
         translated_html += (
             f'<div class="para" data-id="{p["id"]}" '
-            f'data-bbox=\'{bbox_json}\' data-page="{p["page"]}" '
-            f'onmouseenter="highlightBbox({bbox_json}, {p["page"]})" '
+            f'data-bboxes=\'{bboxes_json}\' data-page="{p["page"]}" '
+            f"onmouseenter='highlightMultiBbox({bboxes_json})' "
             f'onmouseleave="clearHighlight()">'
             f'<span class="para-page-badge">p.{page_num}</span>'
             f'{p["translated"]}</div>'
         )
-
-    # PDF 이미지들을 JSON으로 전달
-    pdf_images_json = json.dumps(pdf_images)
 
     # 페이지별 이미지 HTML 생성
     pdf_pages_html = ""
     for i, img in enumerate(pdf_images):
         bbox_rects = ""
         for p in pairs:
-            if p["page"] != i:
-                continue
-            bbox = p["bbox"]
-            x = (bbox[0] / 1000) * img["width"]
-            y = (bbox[1] / 1000) * img["height"]
-            width = ((bbox[2] - bbox[0]) / 1000) * img["width"]
-            height = ((bbox[3] - bbox[1]) / 1000) * img["height"]
-            bbox_rects += f'''
+            for region in p["bboxes"]:
+                if region["page"] != i:
+                    continue
+                bbox = region["bbox"]
+                x = (bbox[0] / 1000) * img["width"]
+                y = (bbox[1] / 1000) * img["height"]
+                width = ((bbox[2] - bbox[0]) / 1000) * img["width"]
+                height = ((bbox[3] - bbox[1]) / 1000) * img["height"]
+                bbox_rects += f'''
             <rect class="bbox-area" data-id="{p["id"]}"
                   x="{x}" y="{y}" width="{width}" height="{height}"
                   onmouseenter="highlightTranslation({p["id"]})"
@@ -188,15 +198,23 @@ def generate_html(pairs, pdf_images):
     return html
 
 
-HIGHLIGHT_JS = """
-() => {
-    window.highlightBbox = function(bbox, pageIdx) {
-        window.clearHighlight();
+# -- JS injected via Blocks(head=...) so it survives Gradio's HTML sanitization --
+HIGHLIGHT_HEAD = """
+<script>
+window.highlightMultiBbox = function(bboxes) {
+    window.clearHighlight();
+    window.currentHighlights = [];
+
+    if (!bboxes || !bboxes.length) return;
+
+    for (var i = 0; i < bboxes.length; i++) {
+        var region = bboxes[i];
+        var bbox = region.bbox;
+        var pageIdx = region.page;
 
         var svg = document.querySelector('.pdf-overlay[data-page="' + pageIdx + '"]');
-        if (!svg) { console.log('SVG not found for page', pageIdx); return; }
+        if (!svg) continue;
 
-        // viewBox에서 실제 크기를 동적으로 읽어옴 (하드코딩 제거)
         var viewBox = svg.viewBox.baseVal;
         var svgW = viewBox.width;
         var svgH = viewBox.height;
@@ -206,8 +224,6 @@ HIGHLIGHT_JS = """
         var width = ((bbox[2] - bbox[0]) / 1000) * svgW;
         var height = ((bbox[3] - bbox[1]) / 1000) * svgH;
 
-        console.log('highlight:', pageIdx, bbox, 'viewBox:', svgW, svgH, '->', x, y, width, height);
-
         var rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
         rect.setAttribute('x', x);
         rect.setAttribute('y', y);
@@ -216,96 +232,81 @@ HIGHLIGHT_JS = """
         rect.setAttribute('class', 'highlight-rect');
         svg.appendChild(rect);
 
-        window.currentHighlight = { svg: svg, rect: rect };
+        window.currentHighlights.push({ svg: svg, rect: rect });
+    }
 
-        var pageEl = document.querySelector('.pdf-page[data-page="' + pageIdx + '"]');
-        if (pageEl) {
-            pageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // 첫 번째 영역으로 스크롤
+    var firstPage = bboxes[0].page;
+    var pageEl = document.querySelector('.pdf-page[data-page="' + firstPage + '"]');
+    if (pageEl) {
+        pageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+};
+
+window.clearHighlight = function() {
+    if (window.currentHighlights) {
+        for (var i = 0; i < window.currentHighlights.length; i++) {
+            var h = window.currentHighlights[i];
+            h.svg.removeChild(h.rect);
         }
-    };
+        window.currentHighlights = [];
+    }
+    // 하위 호환: 단일 하이라이트도 정리
+    if (window.currentHighlight) {
+        window.currentHighlight.svg.removeChild(window.currentHighlight.rect);
+        window.currentHighlight = null;
+    }
+};
 
-    window.clearHighlight = function() {
-        if (window.currentHighlight) {
-            window.currentHighlight.svg.removeChild(window.currentHighlight.rect);
-            window.currentHighlight = null;
-        }
-    };
+window.highlightTranslation = function(id) {
+    window.clearTranslationHighlight();
+    var para = document.querySelector('.para[data-id="' + id + '"]');
+    if (para) {
+        para.classList.add('highlight');
+        para.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+};
 
-    window.highlightTranslation = function(id) {
-        window.clearTranslationHighlight();
-        var para = document.querySelector('.para[data-id="' + id + '"]');
-        if (para) {
-            para.classList.add('highlight');
-            para.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-    };
+window.clearTranslationHighlight = function() {
+    document.querySelectorAll('.para.highlight').forEach(function(el) {
+        el.classList.remove('highlight');
+    });
+};
 
-    window.clearTranslationHighlight = function() {
-        document.querySelectorAll('.para.highlight').forEach(el => el.classList.remove('highlight'));
-    };
+window.updateTranslationPageIndicator = function() {
+    var wrapper = document.getElementById('translationWrapper');
+    var indicator = document.getElementById('translationPageIndicator');
+    if (!wrapper || !indicator) return;
 
-    // 번역본 스크롤 시 현재 페이지 번호 표시 업데이트
-    window.updateTranslationPageIndicator = function() {
-        var wrapper = document.getElementById('translationWrapper');
-        var indicator = document.getElementById('translationPageIndicator');
-        if (!wrapper || !indicator) return;
+    var paras = wrapper.querySelectorAll('.para[data-page]');
+    var currentPage = 0;
+    var wrapperTop = wrapper.scrollTop + wrapper.offsetTop;
 
-        var paras = wrapper.querySelectorAll('.para[data-page]');
-        var currentPage = 0;
-        var wrapperTop = wrapper.scrollTop + wrapper.offsetTop;
-
-        paras.forEach(function(para) {
-            if (para.offsetTop <= wrapperTop + 60) {
-                currentPage = parseInt(para.getAttribute('data-page')) || 0;
-            }
-        });
-
-        indicator.textContent = 'Page ' + (currentPage + 1);
-    };
-
-    // 번역본 영역 스크롤 이벤트 감지
-    var setupScrollObserver = function() {
-        var wrapper = document.getElementById('translationWrapper');
-        if (wrapper) {
-            wrapper.addEventListener('scroll', window.updateTranslationPageIndicator);
-        }
-    };
-
-    // DOM 변경 감지하여 번역 결과가 로드되면 스크롤 옵저버 설정
-    var domObserver = new MutationObserver(function() {
-        var wrapper = document.getElementById('translationWrapper');
-        if (wrapper) {
-            setupScrollObserver();
+    paras.forEach(function(para) {
+        if (para.offsetTop <= wrapperTop + 60) {
+            currentPage = parseInt(para.getAttribute('data-page')) || 0;
         }
     });
-    domObserver.observe(document.body, {childList: true, subtree: true});
 
-    // KaTeX 동적 렌더링 함수
-    window.renderMathContent = function() {
-        if (typeof renderMathInElement !== 'undefined') {
-            renderMathInElement(document.body, {
-                delimiters: [
-                    {left: '$$', right: '$$', display: true},
-                    {left: '$', right: '$', display: false}
-                ],
-                throwOnError: false
-            });
-        }
-    };
+    indicator.textContent = 'Page ' + (currentPage + 1);
+};
 
-    // 콘텐츠 업데이트 감지 및 수식 렌더링
-    var mathObserver = new MutationObserver(function(mutations) {
-        setTimeout(window.renderMathContent, 100);
-    });
-    mathObserver.observe(document.body, {childList: true, subtree: true});
-
-    console.log('Highlight and Math functions loaded');
-}
+// DOM 변경 감지하여 번역 결과가 로드되면 스크롤 옵저버 설정
+var _scrollBound = false;
+new MutationObserver(function() {
+    if (_scrollBound) return;
+    var wrapper = document.getElementById('translationWrapper');
+    if (wrapper) {
+        wrapper.addEventListener('scroll', window.updateTranslationPageIndicator);
+        _scrollBound = true;
+    }
+}).observe(document.body, {childList: true, subtree: true});
+</script>
 """
 
 
 def create_app():
-    with gr.Blocks(title="논문 번역기", js=HIGHLIGHT_JS) as app:
+    with gr.Blocks(title="논문 번역기", head=HIGHLIGHT_HEAD) as app:
         gr.Markdown("# 논문 PDF 번역기")
         gr.Markdown(
             "PDF를 업로드하면 파싱 후 번역합니다. "

@@ -33,7 +33,7 @@ class PaperParser:
         if ref_idx is not None:
             body_blocks = body_blocks[:ref_idx]
 
-        paragraphs = self.paragraph_builder.build(body_blocks)
+        paragraphs = self.paragraph_builder.merge_broken_paragraphs(body_blocks)
 
         tables = [self._to_table(b) for b in blocks if self.classifier.is_table(b)]
         figures = [self._to_figure(b) for b in blocks if self.classifier.is_figure(b)]
