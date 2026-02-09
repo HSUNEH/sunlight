@@ -23,6 +23,10 @@ class PaperParser:
         blocks = list(self._run_mineru(pdf_path))
         body_blocks = [b for b in blocks if self.classifier.is_body_text(b)]
 
+        # 논문 앞부분 메타 정보(저자, 소속 등) 제거:
+        # 첫 번째 제목(논문 타이틀) 이후 ~ 두 번째 제목(Introduction 등) 이전 블록 스킵
+        body_blocks = self._strip_front_matter(body_blocks)
+
         # References 이후 블록 제거
         ref_idx = None
         for i, b in enumerate(body_blocks):
@@ -48,15 +52,55 @@ class PaperParser:
             metadata=metadata,
         )
 
+    @staticmethod
+    def _strip_front_matter(blocks: list[dict]) -> list[dict]:
+        """논문 첫 제목과 두 번째 제목 사이의 메타 블록(저자, 소속 등)을 제거.
+
+        Abstract로 시작하는 블록은 유지한다.
+        """
+        first_title_idx = None
+        second_title_idx = None
+        for i, b in enumerate(blocks):
+            if b.get("text_level") == 1:
+                if first_title_idx is None:
+                    first_title_idx = i
+                else:
+                    second_title_idx = i
+                    break
+
+        if first_title_idx is None or second_title_idx is None:
+            return blocks
+
+        # 사이 블록 중 Abstract 블록만 유지
+        kept = []
+        for b in blocks[first_title_idx + 1 : second_title_idx]:
+            text = (b.get("text") or "").strip()
+            if text.lower().startswith("abstract"):
+                kept.append(b)
+
+        return blocks[: first_title_idx + 1] + kept + blocks[second_title_idx:]
+
     def _run_mineru(self, pdf_path: Path) -> Iterable[dict]:
         """Run MinerU CLI and yield content list blocks."""
         output_root = Path("output")
+
+        # pipeline 백엔드는 auto/ 디렉토리에 출력
         content_list_path = (
+            output_root
+            / pdf_path.stem
+            / "auto"
+            / f"{pdf_path.stem}_content_list.json"
+        )
+        # hybrid 백엔드 캐시도 확인 (이전 실행 결과 재사용)
+        hybrid_path = (
             output_root
             / pdf_path.stem
             / "hybrid_auto"
             / f"{pdf_path.stem}_content_list.json"
         )
+        if hybrid_path.exists():
+            content_list_path = hybrid_path
+
         if not content_list_path.exists():
             output_root.mkdir(parents=True, exist_ok=True)
 
@@ -69,6 +113,8 @@ class PaperParser:
                     str(pdf_path),
                     "-o",
                     str(output_root),
+                    "-b",
+                    "pipeline",
                     "-d",
                     device,
                 ]

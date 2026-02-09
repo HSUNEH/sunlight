@@ -50,10 +50,21 @@ class ParagraphBuilder:
         # list면 병합하지 않음
         if current_block.get("type") == "list" or next_block.get("type") == "list":
             return False
-        # 현재 텍스트가 문장종결 부호로 끝나면 병합하지 않음
         stripped = current_text.rstrip()
         if not stripped:
             return False
+        # 컬럼이 바뀌면서 다음 블록이 현재보다 훨씬 위에 있으면 별개 문단
+        cur_bbox = current_block.get("bbox", [0, 0, 0, 0])
+        nxt_bbox = next_block.get("bbox", [0, 0, 0, 0])
+        same_page = current_block.get("page_idx", 0) == next_block.get("page_idx", 0)
+        col_change = same_page and abs(cur_bbox[0] - nxt_bbox[0]) > 100
+        if col_change and nxt_bbox[1] < cur_bbox[1] - 100:
+            return False
+        # 다음 블록이 소문자로 시작하면 문단이 이어지는 것 (컬럼/페이지 넘김)
+        next_stripped = next_text.lstrip()
+        if next_stripped and next_stripped[0].islower():
+            return True
+        # 현재 텍스트가 문장종결 부호로 끝나면 병합하지 않음
         if stripped[-1] in ".!?:;":
             return False
         return True

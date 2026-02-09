@@ -1,15 +1,43 @@
 import asyncio
 import base64
 import json
+import os
+import re
+import tempfile
 
 import fitz  # PyMuPDF
 import gradio as gr
+import requests
 from dotenv import load_dotenv
 
 from src.parser import PaperParser
 from src.translator import PaperTranslator
 
 load_dotenv()
+
+# arXiv URL 패턴: abs, pdf, html 등 다양한 형태 지원
+ARXIV_PATTERN = re.compile(
+    r"(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5}(?:v\d+)?)"
+)
+
+
+def download_arxiv_pdf(url: str) -> str:
+    """arXiv URL에서 PDF를 다운로드하여 임시 파일 경로를 반환."""
+    match = ARXIV_PATTERN.search(url.strip())
+    if not match:
+        raise ValueError(f"유효한 arXiv URL이 아닙니다: {url}")
+
+    paper_id = match.group(1)
+    pdf_url = f"https://arxiv.org/pdf/{paper_id}"
+
+    resp = requests.get(pdf_url, timeout=60)
+    resp.raise_for_status()
+
+    tmp_dir = tempfile.mkdtemp()
+    pdf_path = os.path.join(tmp_dir, f"{paper_id}.pdf")
+    with open(pdf_path, "wb") as f:
+        f.write(resp.content)
+    return pdf_path
 
 
 def pdf_to_images(pdf_path, scale=1.5):
@@ -32,14 +60,21 @@ def pdf_to_images(pdf_path, scale=1.5):
     return images
 
 
-def process_pdf(pdf_file, target_lang, progress=gr.Progress()):
-    """PDF 파싱 -> 번역 -> HTML 결과 반환."""
-    if pdf_file is None:
-        return "<p>PDF 파일을 업로드하세요.</p>"
+def process_pdf(arxiv_url, progress=gr.Progress()):
+    """arXiv URL -> PDF 다운로드 -> 파싱 -> 번역 -> HTML 결과 반환."""
+    if not arxiv_url or not arxiv_url.strip():
+        raise gr.Error("arXiv URL을 입력하세요. (예: https://arxiv.org/abs/2301.12345)")
+
+    url = arxiv_url.strip()
+    if not ARXIV_PATTERN.search(url):
+        raise gr.Error("유효한 arXiv URL이 아닙니다. (예: https://arxiv.org/abs/2301.12345)")
+
+    progress(0.02, desc="arXiv에서 PDF 다운로드 중...")
+    pdf_path = download_arxiv_pdf(url)
 
     progress(0.05, desc="파싱 중...")
     parser = PaperParser()
-    parsed = parser.parse(pdf_file.name)
+    parsed = parser.parse(pdf_path)
 
     progress(0.1, desc="번역 준비 중...")
     translator = PaperTranslator()
@@ -50,12 +85,12 @@ def process_pdf(pdf_file, target_lang, progress=gr.Progress()):
 
     translated = asyncio.run(
         translator.translate_async(
-            parsed, target_lang, batch_size=25, on_batch_done=on_batch_done
+            parsed, "ko", batch_size=25, on_batch_done=on_batch_done
         )
     )
 
     progress(0.9, desc="PDF 이미지 변환 중...")
-    pdf_images = pdf_to_images(pdf_file.name, scale=1.5)
+    pdf_images = pdf_to_images(pdf_path, scale=1.5)
 
     progress(0.95, desc="결과 생성 중...")
     pairs = []
@@ -84,11 +119,12 @@ def generate_html(pairs, pdf_images):
     translated_html = ""
     for p in pairs:
         bboxes_json = json.dumps(p["bboxes"])
+        para_id = p["id"]
         page_num = p["page"] + 1
         translated_html += (
-            f'<div class="para" data-id="{p["id"]}" '
+            f'<div class="para" data-id="{para_id}" '
             f'data-bboxes=\'{bboxes_json}\' data-page="{p["page"]}" '
-            f"onmouseenter='highlightMultiBbox({bboxes_json}, {p[\"id\"]})' "
+            f"onmouseenter='highlightMultiBbox({bboxes_json}, {para_id})' "
             f'onmouseleave="clearHighlight()">'
             f'<span class="para-page-badge">p.{page_num}</span>'
             f'<span class="para-text">{p["translated"]}</span>'
@@ -160,10 +196,12 @@ def generate_html(pairs, pdf_images):
             display: flex;
             gap: 0;
             height: 82vh;
-            border-radius: 12px;
+            border-radius: 16px;
             overflow: hidden;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06);
-            border: 1px solid rgba(0,0,0,0.08);
+            box-shadow:
+                0 8px 32px rgba(180, 120, 40, 0.10),
+                0 2px 8px rgba(180, 120, 40, 0.06);
+            border: 1px solid rgba(217, 175, 100, 0.20);
         }}
 
         .viewer-panel {{
@@ -175,7 +213,7 @@ def generate_html(pairs, pdf_images):
         }}
 
         .viewer-panel + .viewer-panel {{
-            border-left: 1px solid rgba(0,0,0,0.08);
+            border-left: 1px solid rgba(217, 175, 100, 0.18);
         }}
 
         /* ── Panel Headers ── */
@@ -183,9 +221,9 @@ def generate_html(pairs, pdf_images):
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 12px 18px;
-            background: linear-gradient(135deg, #fafbfc 0%, #f3f4f6 100%);
-            border-bottom: 1px solid rgba(0,0,0,0.06);
+            padding: 14px 20px;
+            background: linear-gradient(135deg, #fffcf5 0%, #fef7e8 100%);
+            border-bottom: 1px solid rgba(217, 175, 100, 0.15);
             flex-shrink: 0;
         }}
 
@@ -196,39 +234,48 @@ def generate_html(pairs, pdf_images):
         }}
 
         .panel-icon {{
-            width: 28px;
-            height: 28px;
-            border-radius: 8px;
+            width: 30px;
+            height: 30px;
+            border-radius: 9px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 14px;
+            font-size: 13px;
+            font-weight: 700;
         }}
 
-        .panel-icon.pdf {{ background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }}
-        .panel-icon.translation {{ background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; }}
+        .panel-icon.pdf {{
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+            box-shadow: 0 2px 8px rgba(245, 158, 11, 0.30);
+        }}
+        .panel-icon.translation {{
+            background: linear-gradient(135deg, #fb923c, #ea580c);
+            color: white;
+            box-shadow: 0 2px 8px rgba(251, 146, 60, 0.30);
+        }}
 
         .panel-title {{
             font-size: 13px;
             font-weight: 600;
-            color: #1f2937;
+            color: #44361e;
             letter-spacing: -0.01em;
         }}
 
         .panel-subtitle {{
             font-size: 11px;
-            color: #9ca3af;
+            color: #a18c6e;
             font-weight: 500;
         }}
 
         .stat-badge {{
             font-size: 11px;
-            color: #6b7280;
-            background: white;
-            border: 1px solid rgba(0,0,0,0.08);
+            color: #92742d;
+            background: linear-gradient(135deg, #fffdf7, #fef9ee);
+            border: 1px solid rgba(217, 175, 100, 0.20);
             border-radius: 20px;
-            padding: 3px 10px;
-            font-weight: 500;
+            padding: 3px 12px;
+            font-weight: 600;
             white-space: nowrap;
         }}
 
@@ -237,23 +284,25 @@ def generate_html(pairs, pdf_images):
             flex: 1;
             overflow-y: auto;
             overflow-x: auto;
-            background: #1e1e2e;
+            background: linear-gradient(180deg, #1c1710 0%, #211d14 100%);
             padding: 20px;
             scroll-behavior: smooth;
         }}
 
         .pdf-wrapper::-webkit-scrollbar {{ width: 8px; }}
         .pdf-wrapper::-webkit-scrollbar-track {{ background: transparent; }}
-        .pdf-wrapper::-webkit-scrollbar-thumb {{ background: rgba(255,255,255,0.15); border-radius: 4px; }}
-        .pdf-wrapper::-webkit-scrollbar-thumb:hover {{ background: rgba(255,255,255,0.25); }}
+        .pdf-wrapper::-webkit-scrollbar-thumb {{ background: rgba(245, 180, 80, 0.20); border-radius: 4px; }}
+        .pdf-wrapper::-webkit-scrollbar-thumb:hover {{ background: rgba(245, 180, 80, 0.35); }}
 
         .pdf-page {{
             position: relative;
             display: block;
             margin: 0 auto 20px auto;
             background: white;
-            border-radius: 4px;
-            box-shadow: 0 2px 16px rgba(0,0,0,0.35);
+            border-radius: 6px;
+            box-shadow:
+                0 4px 20px rgba(0,0,0,0.30),
+                0 0 0 1px rgba(255, 220, 140, 0.06);
             overflow: hidden;
         }}
 
@@ -281,22 +330,22 @@ def generate_html(pairs, pdf_images):
         }}
 
         .highlight-rect {{
-            fill: rgba(59, 130, 246, 0.18);
-            stroke: #3b82f6;
+            fill: rgba(245, 158, 11, 0.18);
+            stroke: #f59e0b;
             stroke-width: 2;
             rx: 3;
             ry: 3;
-            animation: highlight-pulse 1.5s ease-in-out infinite;
+            animation: highlight-pulse 1.8s ease-in-out infinite;
         }}
 
         @keyframes highlight-pulse {{
-            0%, 100% {{ fill: rgba(59, 130, 246, 0.18); }}
-            50% {{ fill: rgba(59, 130, 246, 0.30); }}
+            0%, 100% {{ fill: rgba(245, 158, 11, 0.15); }}
+            50% {{ fill: rgba(245, 158, 11, 0.32); }}
         }}
 
         .page-number-label {{
-            background: linear-gradient(135deg, #374151, #1f2937);
-            color: #e5e7eb;
+            background: linear-gradient(135deg, #3d3422, #2a2318);
+            color: #e8d5b0;
             font-size: 11px;
             font-weight: 600;
             padding: 6px 14px;
@@ -308,37 +357,37 @@ def generate_html(pairs, pdf_images):
             gap: 4px;
         }}
 
-        .page-num-text {{ color: #f9fafb; }}
-        .page-num-total {{ color: #6b7280; font-weight: 400; }}
+        .page-num-text {{ color: #f5e6c8; }}
+        .page-num-total {{ color: #8a7a5c; font-weight: 400; }}
 
         /* ── Translation Panel ── */
         .translation-wrapper {{
             flex: 1;
             overflow-y: auto;
             padding: 8px 14px;
-            background: #ffffff;
+            background: linear-gradient(180deg, #fffdf8 0%, #fefbf3 100%);
             scroll-behavior: smooth;
         }}
 
         .translation-wrapper::-webkit-scrollbar {{ width: 6px; }}
         .translation-wrapper::-webkit-scrollbar-track {{ background: transparent; }}
-        .translation-wrapper::-webkit-scrollbar-thumb {{ background: rgba(0,0,0,0.10); border-radius: 3px; }}
-        .translation-wrapper::-webkit-scrollbar-thumb:hover {{ background: rgba(0,0,0,0.18); }}
+        .translation-wrapper::-webkit-scrollbar-thumb {{ background: rgba(180, 140, 60, 0.15); border-radius: 3px; }}
+        .translation-wrapper::-webkit-scrollbar-thumb:hover {{ background: rgba(180, 140, 60, 0.28); }}
 
         .translation-page-indicator {{
             position: sticky;
             top: 0;
             z-index: 10;
-            background: linear-gradient(135deg, #eff6ff, #dbeafe);
-            color: #1d4ed8;
+            background: linear-gradient(135deg, #fef9ee, #fdf0d5);
+            color: #92641a;
             font-size: 11px;
             font-weight: 600;
             padding: 6px 14px;
-            border-radius: 8px;
+            border-radius: 10px;
             margin-bottom: 8px;
             text-align: center;
             letter-spacing: 0.2px;
-            border: 1px solid rgba(59, 130, 246, 0.12);
+            border: 1px solid rgba(245, 180, 80, 0.18);
             backdrop-filter: blur(8px);
         }}
 
@@ -350,36 +399,37 @@ def generate_html(pairs, pdf_images):
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             line-height: 1.75;
             font-size: 14px;
-            color: #374151;
+            color: #3d3422;
             border: 1px solid transparent;
             position: relative;
         }}
 
         .para:hover {{
-            background: #f0f7ff;
-            border-color: rgba(59,130,246,0.15);
+            background: #fef9ee;
+            border-color: rgba(245, 180, 80, 0.18);
         }}
 
         .para.highlight {{
-            background: linear-gradient(135deg, #eff6ff, #dbeafe);
-            border-color: rgba(59,130,246,0.25);
-            box-shadow: 0 2px 8px rgba(59,130,246,0.10);
+            background: linear-gradient(135deg, #fef9ee, #fdf0d5);
+            border-color: rgba(245, 158, 11, 0.30);
+            box-shadow: 0 2px 12px rgba(245, 158, 11, 0.12);
         }}
 
         .para.highlight .para-page-badge {{
-            background: #3b82f6;
+            background: linear-gradient(135deg, #f59e0b, #d97706);
             color: white;
             border-color: transparent;
+            box-shadow: 0 1px 4px rgba(245, 158, 11, 0.25);
         }}
 
         .para-page-badge {{
             display: inline-flex;
             align-items: center;
             font-size: 10px;
-            color: #9ca3af;
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
-            border-radius: 5px;
+            color: #a18c6e;
+            background: #fefbf3;
+            border: 1px solid rgba(217, 175, 100, 0.22);
+            border-radius: 6px;
             padding: 1px 7px;
             margin-right: 8px;
             vertical-align: middle;
@@ -393,7 +443,7 @@ def generate_html(pairs, pdf_images):
             vertical-align: middle;
         }}
 
-        /* ── Tooltip hint (번역 패널 첫 hover) ── */
+        /* ── Accent bar ── */
         .para::after {{
             content: '';
             position: absolute;
@@ -401,7 +451,7 @@ def generate_html(pairs, pdf_images):
             top: 0;
             width: 3px;
             height: 100%;
-            background: #3b82f6;
+            background: linear-gradient(180deg, #f59e0b, #ea580c);
             border-radius: 10px 0 0 10px;
             opacity: 0;
             transition: opacity 0.2s ease;
@@ -417,10 +467,10 @@ def generate_html(pairs, pdf_images):
         <div class="viewer-panel">
             <div class="panel-header">
                 <div class="panel-header-left">
-                    <div class="panel-icon pdf">P</div>
+                    <div class="panel-icon pdf">\u2609</div>
                     <div>
                         <div class="panel-title">Original PDF</div>
-                        <div class="panel-subtitle">Hover on translation to highlight</div>
+                        <div class="panel-subtitle">Hover to illuminate source</div>
                     </div>
                 </div>
                 <div class="stat-badge">{total_pages} pages</div>
@@ -432,10 +482,10 @@ def generate_html(pairs, pdf_images):
         <div class="viewer-panel">
             <div class="panel-header">
                 <div class="panel-header-left">
-                    <div class="panel-icon translation">T</div>
+                    <div class="panel-icon translation">\u2600</div>
                     <div>
                         <div class="panel-title">Translation</div>
-                        <div class="panel-subtitle">Hover on PDF to highlight</div>
+                        <div class="panel-subtitle">Hover to illuminate translation</div>
                     </div>
                 </div>
                 <div class="stat-badge">{total_paras} paragraphs</div>
@@ -457,6 +507,7 @@ HIGHLIGHT_HEAD = """
     .gradio-container {
         max-width: 100% !important;
         padding: 16px 24px !important;
+        background: linear-gradient(180deg, #fffcf5 0%, #fefaf0 50%, #fdf6e8 100%) !important;
     }
     footer { display: none !important; }
 </style>
@@ -501,11 +552,6 @@ window.highlightMultiBbox = function(bboxes, paraId) {
         window.currentHighlights.push({ svg: svg, rect: rect });
     }
 
-    var firstPage = bboxes[0].page;
-    var pageEl = document.querySelector('.pdf-page[data-page="' + firstPage + '"]');
-    if (pageEl) {
-        pageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
 };
 
 window.clearHighlight = function() {
@@ -536,7 +582,6 @@ window.highlightTranslation = function(id) {
     var para = document.querySelector('.para[data-id="' + id + '"]');
     if (para) {
         para.classList.add('highlight');
-        para.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 };
 
@@ -580,56 +625,70 @@ new MutationObserver(function() {
 CUSTOM_CSS = """
 .app-header {
     text-align: center;
-    padding: 8px 0 4px 0;
+    padding: 16px 0 8px 0;
+}
+.app-header .sunlight-logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+.app-header .sun-icon {
+    font-size: 28px;
+    display: inline-block;
+    animation: sun-glow 3s ease-in-out infinite;
+    filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.4));
+}
+@keyframes sun-glow {
+    0%, 100% { filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.4)); }
+    50% { filter: drop-shadow(0 0 16px rgba(245, 158, 11, 0.65)); }
 }
 .app-header h1 {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    font-size: 24px;
+    font-size: 26px;
     font-weight: 700;
-    color: #111827;
+    background: linear-gradient(135deg, #d97706, #f59e0b, #ea580c);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
     margin: 0;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.03em;
+    display: inline;
 }
 .app-header p {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 13px;
-    color: #6b7280;
-    margin: 6px 0 0 0;
+    color: #92742d;
+    margin: 8px 0 0 0;
     line-height: 1.5;
+}
+
+/* Gradio component warm overrides */
+.gradio-container .primary {
+    background: linear-gradient(135deg, #f59e0b, #d97706) !important;
+    border: none !important;
 }
 """
 
 
 def create_app():
-    with gr.Blocks(
-        title="Sunlight - Paper Translator",
-        head=HIGHLIGHT_HEAD,
-        css=CUSTOM_CSS,
-        theme=gr.themes.Soft(
-            primary_hue=gr.themes.colors.blue,
-            neutral_hue=gr.themes.colors.gray,
-            font=gr.themes.GoogleFont("Inter"),
-        ),
-    ) as app:
+    with gr.Blocks(title="Sunlight - Paper Translator") as app:
         gr.HTML(
             '<div class="app-header">'
+            '<div class="sunlight-logo">'
+            '<span class="sun-icon">\u2600\uFE0F</span>'
             "<h1>Sunlight</h1>"
-            "<p>PDF 논문을 업로드하면 자동으로 파싱하고 번역합니다. "
-            "번역문과 원본 PDF가 양방향으로 하이라이트 연동됩니다.</p>"
+            "</div>"
+            "<p>arXiv URL을 입력하면 자동으로 PDF를 다운로드하여 번역합니다. "
+            "원문과 번역이 빛처럼 연결됩니다.</p>"
             "</div>"
         )
 
         with gr.Row(equal_height=True):
-            pdf_input = gr.File(
-                label="PDF 업로드",
-                file_types=[".pdf"],
-                scale=3,
-            )
-            lang_input = gr.Dropdown(
-                choices=["ko", "ja", "zh", "es", "fr", "de"],
-                value="ko",
-                label="Target Language",
-                scale=1,
+            arxiv_input = gr.Textbox(
+                label="arXiv URL",
+                placeholder="https://arxiv.org/abs/2301.12345",
+                scale=4,
             )
             submit_btn = gr.Button(
                 "Translate",
@@ -640,11 +699,24 @@ def create_app():
 
         output_html = gr.HTML(label="결과")
 
-        submit_btn.click(fn=process_pdf, inputs=[pdf_input, lang_input], outputs=[output_html])
+        submit_btn.click(
+            fn=process_pdf,
+            inputs=[arxiv_input],
+            outputs=[output_html],
+        )
 
     return app
 
 
 if __name__ == "__main__":
     app = create_app()
-    app.launch()
+    app.launch(
+        head=HIGHLIGHT_HEAD,
+        css=CUSTOM_CSS,
+        theme=gr.themes.Soft(
+            primary_hue=gr.themes.colors.amber,
+            secondary_hue=gr.themes.colors.orange,
+            neutral_hue=gr.themes.colors.stone,
+            font=gr.themes.GoogleFont("Inter"),
+        ),
+    )

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from src.app import ARXIV_PATTERN, download_arxiv_pdf
 from src.parser import PaperParser
 from src.translator import PaperTranslator
 
@@ -11,7 +12,7 @@ load_dotenv()
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="논문 PDF 번역기")
-    parser.add_argument("pdf", help="입력 PDF 파일 경로")
+    parser.add_argument("pdf", help="입력 PDF 파일 경로 또는 arXiv URL")
     parser.add_argument(
         "-o", "--output", default="translated.md", help="출력 Markdown 파일"
     )
@@ -21,9 +22,15 @@ def main() -> None:
     parser.add_argument("--no-translate", action="store_true", help="번역 없이 파싱만")
     args = parser.parse_args()
 
-    print(f"파싱 중: {args.pdf}")
+    pdf_path = args.pdf
+    if ARXIV_PATTERN.search(pdf_path):
+        print(f"arXiv에서 PDF 다운로드 중: {pdf_path}")
+        pdf_path = download_arxiv_pdf(pdf_path)
+        print(f"다운로드 완료: {pdf_path}")
+
+    print(f"파싱 중: {pdf_path}")
     paper_parser = PaperParser()
-    parsed = paper_parser.parse(args.pdf)
+    parsed = paper_parser.parse(pdf_path)
     print(f"  - 본문: {len(parsed.body)}개 문단")
     print(f"  - 테이블: {len(parsed.tables)}개")
     print(f"  - 수식: {len(parsed.equations)}개")

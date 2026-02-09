@@ -124,11 +124,15 @@ class PaperTranslator:
         paper: ParsedPaper,
         target_lang: str = "ko",
         batch_size: int = 25,
+        on_batch_done=None,
     ) -> ParsedPaper:
         """Batch translate in parallel using async requests.
 
         Paragraphs that should be skipped (math-only, very short, empty) are
         kept as-is and excluded from the API call to save tokens and latency.
+
+        If *on_batch_done* is provided it is called as
+        ``on_batch_done(completed, total)`` after each batch finishes.
         """
         translated_body: list[Paragraph] = [None] * len(paper.body)  # type: ignore[list-item]
 
@@ -151,11 +155,18 @@ class PaperTranslator:
             chunk_texts = [p.text for p in chunk_paras]
             batches.append((chunk_indices, chunk_paras, chunk_texts))
 
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(10)
+        completed_count = 0
+        total_batches = len(batches)
 
         async def _do_batch(texts: list[str], lang: str) -> list[str]:
+            nonlocal completed_count
             async with semaphore:
-                return await self._translate_batch_async(texts, lang)
+                result = await self._translate_batch_async(texts, lang)
+                completed_count += 1
+                if on_batch_done:
+                    on_batch_done(completed_count, total_batches)
+                return result
 
         tasks = [_do_batch(texts, target_lang) for _, _, texts in batches]
         results = await asyncio.gather(*tasks)
