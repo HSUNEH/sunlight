@@ -18,7 +18,6 @@ def pdf_to_images(pdf_path, scale=1.5):
     images = []
     for page_num in range(len(doc)):
         page = doc[page_num]
-        # scale로 해상도 조절
         mat = fitz.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=mat)
         img_bytes = pix.tobytes("png")
@@ -46,7 +45,6 @@ def process_pdf(pdf_file, target_lang, progress=gr.Progress()):
     translator = PaperTranslator()
 
     def on_batch_done(completed, total):
-        # 번역 구간: 0.1 ~ 0.85
         frac = 0.1 + 0.75 * (completed / total)
         progress(frac, desc=f"번역 중... ({completed}/{total} 배치)")
 
@@ -57,11 +55,9 @@ def process_pdf(pdf_file, target_lang, progress=gr.Progress()):
     )
 
     progress(0.9, desc="PDF 이미지 변환 중...")
-    # PDF를 이미지로 변환
     pdf_images = pdf_to_images(pdf_file.name, scale=1.5)
 
     progress(0.95, desc="결과 생성 중...")
-    # 번역 결과에 bbox, page 정보 포함
     pairs = []
     for i, (orig, trans) in enumerate(zip(parsed.body, translated.body)):
         bboxes = orig.bboxes or [{"bbox": orig.bbox or [0, 0, 0, 0], "page": orig.page or 0}]
@@ -81,21 +77,25 @@ def process_pdf(pdf_file, target_lang, progress=gr.Progress()):
 def generate_html(pairs, pdf_images):
     """PDF 이미지 뷰어 + 번역본 HTML 생성."""
 
-    # 번역본 HTML (bbox, page 데이터 포함)
+    total_paras = len(pairs)
+    total_pages = len(pdf_images)
+
+    # 번역본 HTML
     translated_html = ""
     for p in pairs:
         bboxes_json = json.dumps(p["bboxes"])
-        page_num = p["page"] + 1  # 1-based display
+        page_num = p["page"] + 1
         translated_html += (
             f'<div class="para" data-id="{p["id"]}" '
             f'data-bboxes=\'{bboxes_json}\' data-page="{p["page"]}" '
-            f"onmouseenter='highlightMultiBbox({bboxes_json})' "
+            f"onmouseenter='highlightMultiBbox({bboxes_json}, {p[\"id\"]})' "
             f'onmouseleave="clearHighlight()">'
             f'<span class="para-page-badge">p.{page_num}</span>'
-            f'{p["translated"]}</div>'
+            f'<span class="para-text">{p["translated"]}</span>'
+            f'</div>'
         )
 
-    # 페이지별 이미지 HTML 생성
+    # 페이지별 이미지 HTML
     pdf_pages_html = ""
     for i, img in enumerate(pdf_images):
         bbox_rects = ""
@@ -115,11 +115,14 @@ def generate_html(pairs, pdf_images):
                   onmouseleave="clearTranslationHighlight()"
                   style="fill: transparent; cursor: pointer; pointer-events: all;" />
             '''
-        page_label = i + 1  # 1-based display
+        page_label = i + 1
         pdf_pages_html += f'''
         <div class="pdf-page" data-page="{i}">
-            <div class="page-number-label">Page {page_label}</div>
-            <div class="pdf-image-container" style="position: relative;">
+            <div class="page-number-label">
+                <span class="page-num-text">Page {page_label}</span>
+                <span class="page-num-total">/ {total_pages}</span>
+            </div>
+            <div class="pdf-image-container">
                 <img src="data:image/png;base64,{img["base64"]}" />
                 <svg class="pdf-overlay" data-page="{i}"
                      viewBox="0 0 {img["width"]} {img["height"]}"
@@ -134,7 +137,6 @@ def generate_html(pairs, pdf_images):
         </div>
         '''
 
-    # KaTeX CDN for LaTeX rendering
     katex_cdn = """
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
@@ -150,44 +152,294 @@ def generate_html(pairs, pdf_images):
 
     html = katex_cdn + f"""
     <style>
-        .container {{ display: flex; gap: 20px; height: 80vh; }}
-        .column {{ flex: 1; display: flex; flex-direction: column; min-width: 0; }}
-        .column-header {{ font-weight: bold; padding: 10px; background: #f0f0f0; border-radius: 4px 4px 0 0; flex-shrink: 0; }}
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
 
-        /* PDF 뷰어 */
-        .pdf-wrapper {{ flex: 1; overflow-y: auto; overflow-x: auto; border: 1px solid #ddd; border-top: none; background: #525659; padding: 10px; }}
-        .pdf-page {{ position: relative; display: inline-block; margin: 0 auto; background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }}
+        /* ── Reset & Container ── */
+        .viewer-root {{
+            font-family: 'Inter', 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            gap: 0;
+            height: 82vh;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06);
+            border: 1px solid rgba(0,0,0,0.08);
+        }}
+
+        .viewer-panel {{
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            position: relative;
+        }}
+
+        .viewer-panel + .viewer-panel {{
+            border-left: 1px solid rgba(0,0,0,0.08);
+        }}
+
+        /* ── Panel Headers ── */
+        .panel-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 18px;
+            background: linear-gradient(135deg, #fafbfc 0%, #f3f4f6 100%);
+            border-bottom: 1px solid rgba(0,0,0,0.06);
+            flex-shrink: 0;
+        }}
+
+        .panel-header-left {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+
+        .panel-icon {{
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }}
+
+        .panel-icon.pdf {{ background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }}
+        .panel-icon.translation {{ background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; }}
+
+        .panel-title {{
+            font-size: 13px;
+            font-weight: 600;
+            color: #1f2937;
+            letter-spacing: -0.01em;
+        }}
+
+        .panel-subtitle {{
+            font-size: 11px;
+            color: #9ca3af;
+            font-weight: 500;
+        }}
+
+        .stat-badge {{
+            font-size: 11px;
+            color: #6b7280;
+            background: white;
+            border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 20px;
+            padding: 3px 10px;
+            font-weight: 500;
+            white-space: nowrap;
+        }}
+
+        /* ── PDF Viewer ── */
+        .pdf-wrapper {{
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: auto;
+            background: #1e1e2e;
+            padding: 20px;
+            scroll-behavior: smooth;
+        }}
+
+        .pdf-wrapper::-webkit-scrollbar {{ width: 8px; }}
+        .pdf-wrapper::-webkit-scrollbar-track {{ background: transparent; }}
+        .pdf-wrapper::-webkit-scrollbar-thumb {{ background: rgba(255,255,255,0.15); border-radius: 4px; }}
+        .pdf-wrapper::-webkit-scrollbar-thumb:hover {{ background: rgba(255,255,255,0.25); }}
+
+        .pdf-page {{
+            position: relative;
+            display: block;
+            margin: 0 auto 20px auto;
+            background: white;
+            border-radius: 4px;
+            box-shadow: 0 2px 16px rgba(0,0,0,0.35);
+            overflow: hidden;
+        }}
+
+        .pdf-page:last-child {{ margin-bottom: 0; }}
+
         .pdf-image-container {{ position: relative; }}
-        .pdf-page img {{ display: block; width: 100%; height: auto; }}
-        .pdf-overlay {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }}
-        .pdf-clickable {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; }}
-        .highlight-rect {{ fill: rgba(255, 243, 0, 0.4); stroke: #ff9800; stroke-width: 2; }}
 
-        /* 번역본 */
-        .translation-wrapper {{ flex: 1; overflow-y: auto; padding: 10px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 4px 4px; }}
-        .para {{ padding: 10px; margin: 5px 0; border-radius: 4px; cursor: pointer; transition: background 0.2s; line-height: 1.6; }}
-        .para:hover {{ background: #fff3cd; }}
-        .para.highlight {{ background: #fff3cd; }}
+        .pdf-page img {{
+            display: block;
+            width: 100%;
+            height: auto;
+        }}
 
-        /* 페이지 번호 라벨 (PDF 뷰어) */
-        .page-number-label {{ background: rgba(0,0,0,0.6); color: #fff; font-size: 12px; font-weight: 600; padding: 3px 10px; text-align: center; letter-spacing: 0.5px; }}
+        .pdf-overlay {{
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+        }}
 
-        /* 번역본 페이지 배지 */
-        .para-page-badge {{ display: inline-block; font-size: 10px; color: #888; background: #f0f0f0; border-radius: 3px; padding: 1px 5px; margin-right: 6px; vertical-align: middle; font-weight: 600; line-height: 1.4; }}
+        .pdf-clickable {{
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+        }}
 
-        /* 번역본 현재 페이지 표시 */
-        .translation-page-indicator {{ position: sticky; top: 0; z-index: 10; background: #e8f4fd; color: #1a73e8; font-size: 12px; font-weight: 600; padding: 4px 10px; border-bottom: 1px solid #c2dff5; text-align: center; }}
+        .highlight-rect {{
+            fill: rgba(59, 130, 246, 0.18);
+            stroke: #3b82f6;
+            stroke-width: 2;
+            rx: 3;
+            ry: 3;
+            animation: highlight-pulse 1.5s ease-in-out infinite;
+        }}
+
+        @keyframes highlight-pulse {{
+            0%, 100% {{ fill: rgba(59, 130, 246, 0.18); }}
+            50% {{ fill: rgba(59, 130, 246, 0.30); }}
+        }}
+
+        .page-number-label {{
+            background: linear-gradient(135deg, #374151, #1f2937);
+            color: #e5e7eb;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 6px 14px;
+            text-align: center;
+            letter-spacing: 0.3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+        }}
+
+        .page-num-text {{ color: #f9fafb; }}
+        .page-num-total {{ color: #6b7280; font-weight: 400; }}
+
+        /* ── Translation Panel ── */
+        .translation-wrapper {{
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 14px;
+            background: #ffffff;
+            scroll-behavior: smooth;
+        }}
+
+        .translation-wrapper::-webkit-scrollbar {{ width: 6px; }}
+        .translation-wrapper::-webkit-scrollbar-track {{ background: transparent; }}
+        .translation-wrapper::-webkit-scrollbar-thumb {{ background: rgba(0,0,0,0.10); border-radius: 3px; }}
+        .translation-wrapper::-webkit-scrollbar-thumb:hover {{ background: rgba(0,0,0,0.18); }}
+
+        .translation-page-indicator {{
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: linear-gradient(135deg, #eff6ff, #dbeafe);
+            color: #1d4ed8;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 6px 14px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            text-align: center;
+            letter-spacing: 0.2px;
+            border: 1px solid rgba(59, 130, 246, 0.12);
+            backdrop-filter: blur(8px);
+        }}
+
+        .para {{
+            padding: 12px 14px;
+            margin: 4px 0;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            line-height: 1.75;
+            font-size: 14px;
+            color: #374151;
+            border: 1px solid transparent;
+            position: relative;
+        }}
+
+        .para:hover {{
+            background: #f0f7ff;
+            border-color: rgba(59,130,246,0.15);
+        }}
+
+        .para.highlight {{
+            background: linear-gradient(135deg, #eff6ff, #dbeafe);
+            border-color: rgba(59,130,246,0.25);
+            box-shadow: 0 2px 8px rgba(59,130,246,0.10);
+        }}
+
+        .para.highlight .para-page-badge {{
+            background: #3b82f6;
+            color: white;
+            border-color: transparent;
+        }}
+
+        .para-page-badge {{
+            display: inline-flex;
+            align-items: center;
+            font-size: 10px;
+            color: #9ca3af;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 5px;
+            padding: 1px 7px;
+            margin-right: 8px;
+            vertical-align: middle;
+            font-weight: 600;
+            line-height: 1.6;
+            letter-spacing: 0.2px;
+            transition: all 0.2s ease;
+        }}
+
+        .para-text {{
+            vertical-align: middle;
+        }}
+
+        /* ── Tooltip hint (번역 패널 첫 hover) ── */
+        .para::after {{
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 3px;
+            height: 100%;
+            background: #3b82f6;
+            border-radius: 10px 0 0 10px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }}
+
+        .para:hover::after,
+        .para.highlight::after {{
+            opacity: 1;
+        }}
     </style>
 
-    <div class="container">
-        <div class="column">
-            <div class="column-header">Original PDF</div>
+    <div class="viewer-root">
+        <div class="viewer-panel">
+            <div class="panel-header">
+                <div class="panel-header-left">
+                    <div class="panel-icon pdf">P</div>
+                    <div>
+                        <div class="panel-title">Original PDF</div>
+                        <div class="panel-subtitle">Hover on translation to highlight</div>
+                    </div>
+                </div>
+                <div class="stat-badge">{total_pages} pages</div>
+            </div>
             <div class="pdf-wrapper" id="pdfWrapper">
                 {pdf_pages_html}
             </div>
         </div>
-        <div class="column">
-            <div class="column-header">Translated (KO)</div>
+        <div class="viewer-panel">
+            <div class="panel-header">
+                <div class="panel-header-left">
+                    <div class="panel-icon translation">T</div>
+                    <div>
+                        <div class="panel-title">Translation</div>
+                        <div class="panel-subtitle">Hover on PDF to highlight</div>
+                    </div>
+                </div>
+                <div class="stat-badge">{total_paras} paragraphs</div>
+            </div>
             <div class="translation-wrapper" id="translationWrapper">
                 <div class="translation-page-indicator" id="translationPageIndicator">Page 1</div>
                 {translated_html}
@@ -200,12 +452,26 @@ def generate_html(pairs, pdf_images):
 
 # -- JS injected via Blocks(head=...) so it survives Gradio's HTML sanitization --
 HIGHLIGHT_HEAD = """
+<style>
+    /* Gradio container overrides */
+    .gradio-container {
+        max-width: 100% !important;
+        padding: 16px 24px !important;
+    }
+    footer { display: none !important; }
+</style>
 <script>
-window.highlightMultiBbox = function(bboxes) {
+window.highlightMultiBbox = function(bboxes, paraId) {
     window.clearHighlight();
     window.currentHighlights = [];
 
     if (!bboxes || !bboxes.length) return;
+
+    // 번역 패널에서도 active 표시
+    if (paraId !== undefined) {
+        var para = document.querySelector('.para[data-id="' + paraId + '"]');
+        if (para) para.classList.add('highlight');
+    }
 
     for (var i = 0; i < bboxes.length; i++) {
         var region = bboxes[i];
@@ -235,7 +501,6 @@ window.highlightMultiBbox = function(bboxes) {
         window.currentHighlights.push({ svg: svg, rect: rect });
     }
 
-    // 첫 번째 영역으로 스크롤
     var firstPage = bboxes[0].page;
     var pageEl = document.querySelector('.pdf-page[data-page="' + firstPage + '"]');
     if (pageEl) {
@@ -244,16 +509,24 @@ window.highlightMultiBbox = function(bboxes) {
 };
 
 window.clearHighlight = function() {
+    // 번역 패널 하이라이트 제거
+    document.querySelectorAll('.para.highlight').forEach(function(el) {
+        el.classList.remove('highlight');
+    });
+
     if (window.currentHighlights) {
         for (var i = 0; i < window.currentHighlights.length; i++) {
             var h = window.currentHighlights[i];
-            h.svg.removeChild(h.rect);
+            if (h.rect.parentNode === h.svg) {
+                h.svg.removeChild(h.rect);
+            }
         }
         window.currentHighlights = [];
     }
-    // 하위 호환: 단일 하이라이트도 정리
     if (window.currentHighlight) {
-        window.currentHighlight.svg.removeChild(window.currentHighlight.rect);
+        if (window.currentHighlight.rect.parentNode === window.currentHighlight.svg) {
+            window.currentHighlight.svg.removeChild(window.currentHighlight.rect);
+        }
         window.currentHighlight = null;
     }
 };
@@ -291,7 +564,6 @@ window.updateTranslationPageIndicator = function() {
     indicator.textContent = 'Page ' + (currentPage + 1);
 };
 
-// DOM 변경 감지하여 번역 결과가 로드되면 스크롤 옵저버 설정
 var _scrollBound = false;
 new MutationObserver(function() {
     if (_scrollBound) return;
@@ -305,22 +577,66 @@ new MutationObserver(function() {
 """
 
 
+CUSTOM_CSS = """
+.app-header {
+    text-align: center;
+    padding: 8px 0 4px 0;
+}
+.app-header h1 {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 24px;
+    font-weight: 700;
+    color: #111827;
+    margin: 0;
+    letter-spacing: -0.02em;
+}
+.app-header p {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 13px;
+    color: #6b7280;
+    margin: 6px 0 0 0;
+    line-height: 1.5;
+}
+"""
+
+
 def create_app():
-    with gr.Blocks(title="논문 번역기", head=HIGHLIGHT_HEAD) as app:
-        gr.Markdown("# 논문 PDF 번역기")
-        gr.Markdown(
-            "PDF를 업로드하면 파싱 후 번역합니다. "
-            "번역된 문단에 마우스를 올리면 원본 PDF에서 해당 위치가 하이라이트됩니다."
+    with gr.Blocks(
+        title="Sunlight - Paper Translator",
+        head=HIGHLIGHT_HEAD,
+        css=CUSTOM_CSS,
+        theme=gr.themes.Soft(
+            primary_hue=gr.themes.colors.blue,
+            neutral_hue=gr.themes.colors.gray,
+            font=gr.themes.GoogleFont("Inter"),
+        ),
+    ) as app:
+        gr.HTML(
+            '<div class="app-header">'
+            "<h1>Sunlight</h1>"
+            "<p>PDF 논문을 업로드하면 자동으로 파싱하고 번역합니다. "
+            "번역문과 원본 PDF가 양방향으로 하이라이트 연동됩니다.</p>"
+            "</div>"
         )
 
-        with gr.Row():
-            pdf_input = gr.File(label="PDF 업로드", file_types=[".pdf"])
+        with gr.Row(equal_height=True):
+            pdf_input = gr.File(
+                label="PDF 업로드",
+                file_types=[".pdf"],
+                scale=3,
+            )
             lang_input = gr.Dropdown(
                 choices=["ko", "ja", "zh", "es", "fr", "de"],
                 value="ko",
-                label="번역 언어",
+                label="Target Language",
+                scale=1,
             )
-            submit_btn = gr.Button("번역 시작", variant="primary")
+            submit_btn = gr.Button(
+                "Translate",
+                variant="primary",
+                scale=1,
+                size="lg",
+            )
 
         output_html = gr.HTML(label="결과")
 

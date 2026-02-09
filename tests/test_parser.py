@@ -8,7 +8,7 @@ def test_parser_classifies_blocks(tmp_path: Path) -> None:
     pdf_path.write_bytes(b"%PDF-1.4")
 
     blocks = [
-        {"type": "title", "content": "Intro", "page_idx": 0},
+        {"type": "title", "content": "Intro", "page_idx": 0, "text_level": 1},
         {"type": "text", "content": "First sentence.", "page_idx": 0},
         {"type": "list", "content": "Item one.", "page_idx": 0},
         {"type": "table", "html": "<table></table>", "page_idx": 1},
